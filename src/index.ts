@@ -127,6 +127,16 @@ export class SignalingRoom {
   private handleWebSocket(ws: WebSocket): void {
     ws.accept();
 
+    // Set up ping interval (every 30 seconds)
+    const pingInterval = setInterval(() => {
+      try {
+        ws.send(JSON.stringify({ type: 'ping' }));
+      } catch (error) {
+        console.error('Failed to send ping:', error);
+        clearInterval(pingInterval);
+      }
+    }, 30000);
+
     ws.addEventListener('message', (event) => {
       try {
         const message: SignalingMessage = JSON.parse(event.data as string);
@@ -138,11 +148,13 @@ export class SignalingRoom {
     });
 
     ws.addEventListener('close', () => {
+      clearInterval(pingInterval);
       this.handleDisconnect(ws);
     });
 
     ws.addEventListener('error', (error) => {
       console.error('WebSocket error:', error);
+      clearInterval(pingInterval);
       this.handleDisconnect(ws);
     });
   }
@@ -151,6 +163,15 @@ export class SignalingRoom {
     console.log('Received message:', message.type);
 
     switch (message.type) {
+      case 'ping':
+        // Respond to ping with pong
+        ws.send(JSON.stringify({ type: 'pong' }));
+        break;
+
+      case 'pong':
+        // Client responded to our ping, connection is alive
+        break;
+
       case 'register-server':
         this.handleServerRegister(ws, message);
         break;
