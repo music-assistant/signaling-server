@@ -119,6 +119,16 @@ function handleMessage(ws, message) {
       break;
     }
 
+    case 'ping': {
+      ws.send(JSON.stringify({ type: 'pong' }));
+      break;
+    }
+
+    case 'pong': {
+      // Client responded to our ping, connection is alive
+      break;
+    }
+
     default:
       console.log(`Unknown message type: ${msg.type}`);
   }
@@ -189,10 +199,21 @@ const wss = new WebSocketServer({ server: httpServer, path: '/ws' });
 wss.on('connection', (ws) => {
   console.log(`[${new Date().toISOString()}] New connection`);
 
+  // Send ping every 30 seconds to keep connection alive through proxies
+  const pingInterval = setInterval(() => {
+    if (ws.readyState === ws.OPEN) {
+      ws.send(JSON.stringify({ type: 'ping' }));
+    }
+  }, 30000);
+
   ws.on('message', (data) => handleMessage(ws, data.toString()));
-  ws.on('close', () => handleDisconnect(ws));
+  ws.on('close', () => {
+    clearInterval(pingInterval);
+    handleDisconnect(ws);
+  });
   ws.on('error', (err) => {
     console.error('WebSocket error:', err);
+    clearInterval(pingInterval);
     handleDisconnect(ws);
   });
 });
