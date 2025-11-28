@@ -182,10 +182,18 @@ export class SignalingRoom {
 
     // Check if Remote ID is already registered
     if (this.servers.has(remoteId)) {
-      // Disconnect the old connection
       const oldWs = this.servers.get(remoteId)!;
-      oldWs.close(4000, 'Replaced by new connection');
-      this.servers.delete(remoteId);
+      // Only close if it's a different WebSocket connection
+      if (oldWs !== ws) {
+        console.log(`Replacing existing connection for ${remoteId}`);
+        // Clean up old connection before closing to avoid disconnect handler issues
+        this.servers.delete(remoteId);
+        this.wsMetadata.delete(oldWs);
+        oldWs.close(4000, 'Replaced by new connection');
+      } else {
+        // Same WebSocket trying to re-register, just update
+        console.log(`Re-registering same connection for ${remoteId}`);
+      }
     }
 
     // Register the server
