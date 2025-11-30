@@ -201,27 +201,34 @@ export class SignalingRoom {
       return;
     }
 
-    // Check if Remote ID is already registered
-    if (this.servers.has(remoteId)) {
-      const oldWs = this.servers.get(remoteId)!;
-      // Only close if it's a different WebSocket connection
-      if (oldWs !== ws) {
-        console.log(`Replacing existing connection for ${remoteId}`);
-        // Clean up old connection before closing to avoid disconnect handler issues
-        this.servers.delete(remoteId);
-        this.wsMetadata.delete(oldWs);
-        oldWs.close(4000, 'Replaced by new connection');
-      } else {
-        // Same WebSocket trying to re-register, just update
-        console.log(`Re-registering same connection for ${remoteId}`);
-      }
+    // Check if this WebSocket is already registered (duplicate registration attempt)
+    const existingMetadata = this.wsMetadata.get(ws);
+    if (existingMetadata && existingMetadata.type === 'server' && existingMetadata.id === remoteId) {
+      console.log(`WebSocket already registered for ${remoteId}, skipping duplicate registration`);
+      // Just send confirmation again
+      ws.send(JSON.stringify({
+        type: 'registered',
+        remoteId: remoteId,
+      }));
+      return;
     }
 
-    // Register the server
+    // Check if Remote ID is already registered with a DIFFERENT WebSocket
+    const existingWs = this.servers.get(remoteId);
+    if (existingWs && existingWs !== ws) {
+      console.log(`[${remoteId}] Replacing existing connection (different WebSocket)`);
+      // Clean up old connection COMPLETELY before closing to prevent its disconnect handler from interfering
+      this.servers.delete(remoteId);
+      this.wsMetadata.delete(existingWs);
+      // Close old WebSocket - its disconnect handler will do nothing since metadata is gone
+      existingWs.close(4000, 'Replaced by new connection');
+    }
+
+    // Register the new server connection
     this.servers.set(remoteId, ws);
     this.wsMetadata.set(ws, { type: 'server', id: remoteId });
 
-    console.log(`Server registered: ${remoteId}`);
+    console.log(`✓ Server registered: ${remoteId}`);
 
     ws.send(JSON.stringify({
       type: 'registered',
@@ -321,15 +328,23 @@ export class SignalingRoom {
    */
   private handleDisconnect(ws: WebSocket): void {
     const metadata = this.wsMetadata.get(ws);
-    if (!metadata) return;
+    if (!metadata) {
+      // WebSocket closed but has no metadata - likely already cleaned up during re-registration
+      console.log('Disconnect event for WebSocket with no metadata (already cleaned up)');
+      return;
+    }
 
     if (metadata.type === 'server') {
       const remoteId = metadata.id;
+      const currentWs = this.servers.get(remoteId);
+
       // Only delete if this WebSocket is still the registered one
       // (prevents race condition when old connection closes after new one registers)
-      if (this.servers.get(remoteId) === ws) {
+      if (currentWs === ws) {
+        // This is the active connection being closed
         this.servers.delete(remoteId);
-        console.log(`Server disconnected: ${remoteId}`);
+        this.wsMetadata.delete(ws);
+        console.log(`✗ Server disconnected: ${remoteId} (was active connection)`);
 
         // Notify all clients connected to this server
         for (const [sessionId, clientData] of this.clients.entries()) {
@@ -341,7 +356,9 @@ export class SignalingRoom {
           }
         }
       } else {
-        console.log(`Old connection for ${remoteId} closed (already replaced)`);
+        // This is an old connection that was already replaced
+        this.wsMetadata.delete(ws);
+        console.log(`[${remoteId}] Old connection closed (was already replaced by new connection)`);
       }
     } else if (metadata.type === 'client') {
       const sessionId = metadata.id;
@@ -359,10 +376,9 @@ export class SignalingRoom {
         this.clients.delete(sessionId);
       }
 
+      this.wsMetadata.delete(ws);
       console.log(`Client disconnected: ${sessionId}`);
     }
-
-    this.wsMetadata.delete(ws);
   }
 
   private sendError(ws: WebSocket, error: string): void {
