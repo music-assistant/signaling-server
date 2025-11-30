@@ -325,17 +325,23 @@ export class SignalingRoom {
 
     if (metadata.type === 'server') {
       const remoteId = metadata.id;
-      this.servers.delete(remoteId);
-      console.log(`Server disconnected: ${remoteId}`);
+      // Only delete if this WebSocket is still the registered one
+      // (prevents race condition when old connection closes after new one registers)
+      if (this.servers.get(remoteId) === ws) {
+        this.servers.delete(remoteId);
+        console.log(`Server disconnected: ${remoteId}`);
 
-      // Notify all clients connected to this server
-      for (const [sessionId, clientData] of this.clients.entries()) {
-        if (clientData.remoteId === remoteId) {
-          clientData.ws.send(JSON.stringify({
-            type: 'peer-disconnected',
-          }));
-          this.clients.delete(sessionId);
+        // Notify all clients connected to this server
+        for (const [sessionId, clientData] of this.clients.entries()) {
+          if (clientData.remoteId === remoteId) {
+            clientData.ws.send(JSON.stringify({
+              type: 'peer-disconnected',
+            }));
+            this.clients.delete(sessionId);
+          }
         }
+      } else {
+        console.log(`Old connection for ${remoteId} closed (already replaced)`);
       }
     } else if (metadata.type === 'client') {
       const sessionId = metadata.id;
