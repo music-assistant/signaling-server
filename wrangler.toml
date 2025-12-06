@@ -11,6 +11,10 @@ class_name = "SignalingRoom"
 tag = "v1"
 new_classes = ["SignalingRoom"]
 
+[[migrations]]
+tag = "v2"
+# Force Durable Object to use new code with session-ready support
+
 # Environment variables
 [vars]
 ENVIRONMENT = "production"
