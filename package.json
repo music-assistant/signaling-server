@@ -1,6 +1,6 @@
 {
   "name": "ma-signaling-server",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "WebRTC Signaling Server for Music Assistant Remote Connections",
   "main": "src/index.ts",
   "scripts": {
