@@ -95,6 +95,9 @@ export class SignalingRoom {
   // Map of Session ID -> { clientWs, remoteId } (PWA clients)
   private clients: Map<string, { ws: WebSocket; remoteId: string }> = new Map();
 
+  // Map of Session ID -> pending client connection (waiting for server to provide fresh ICE servers)
+  private pendingClients: Map<string, WebSocket> = new Map();
+
   // Map of WebSocket -> metadata
   private wsMetadata: Map<WebSocket, { type: 'server' | 'client'; id: string }> = new Map();
 
@@ -187,6 +190,10 @@ export class SignalingRoom {
         this.handleConnectRequest(ws, message);
         break;
 
+      case 'session-ready':
+        this.handleSessionReady(ws, message);
+        break;
+
       case 'offer':
       case 'answer':
       case 'ice-candidate':
@@ -269,24 +276,75 @@ export class SignalingRoom {
     // Generate a session ID for this connection
     const sessionId = generateSessionId();
 
-    // Register the client
-    this.clients.set(sessionId, { ws, remoteId });
+    // Store pending client - we'll complete the connection when server sends fresh ICE servers
+    this.pendingClients.set(sessionId, ws);
     this.wsMetadata.set(ws, { type: 'client', id: sessionId });
 
-    console.log(`Client connected to ${remoteId} with session ${sessionId}`);
+    console.log(`Client ${sessionId} requesting connection to ${remoteId}, waiting for fresh ICE servers`);
 
-    // Notify the client that connection is established, including ICE servers from the server
-    ws.send(JSON.stringify({
-      type: 'connected',
-      remoteId: remoteId,
-      sessionId: sessionId,
-      iceServers: serverData.iceServers,
-    }));
-
-    // Notify the server about the new client
+    // Request fresh ICE servers from the server
+    // Server will respond with 'session-ready' containing fresh TURN credentials
     serverData.ws.send(JSON.stringify({
       type: 'client-connected',
       sessionId: sessionId,
+    }));
+
+    // Set a timeout - if server doesn't respond within 10 seconds, use cached ICE servers
+    setTimeout(() => {
+      const pendingWs = this.pendingClients.get(sessionId);
+      if (pendingWs) {
+        console.log(`Timeout waiting for fresh ICE servers for session ${sessionId}, using cached`);
+        this.pendingClients.delete(sessionId);
+        this.clients.set(sessionId, { ws: pendingWs, remoteId });
+
+        // Send connected with cached ICE servers as fallback
+        pendingWs.send(JSON.stringify({
+          type: 'connected',
+          remoteId: remoteId,
+          sessionId: sessionId,
+          iceServers: serverData.iceServers,
+        }));
+      }
+    }, 10000);
+  }
+
+  /**
+   * Handle session-ready message from MA server with fresh ICE servers
+   */
+  private handleSessionReady(ws: WebSocket, message: SignalingMessage): void {
+    const sessionId = message.sessionId;
+    if (!sessionId) {
+      this.sendError(ws, 'Session ID required');
+      return;
+    }
+
+    const pendingWs = this.pendingClients.get(sessionId);
+    if (!pendingWs) {
+      // Client may have already been handled by timeout or disconnected
+      console.log(`Session ${sessionId} not pending (already handled or disconnected)`);
+      return;
+    }
+
+    // Get the remote ID from server metadata
+    const serverMetadata = this.wsMetadata.get(ws);
+    if (!serverMetadata || serverMetadata.type !== 'server') {
+      this.sendError(ws, 'Not a registered server');
+      return;
+    }
+    const remoteId = serverMetadata.id;
+
+    // Move from pending to active clients
+    this.pendingClients.delete(sessionId);
+    this.clients.set(sessionId, { ws: pendingWs, remoteId });
+
+    console.log(`Session ${sessionId} ready with fresh ICE servers`);
+
+    // Send connected to client with fresh ICE servers from the server
+    pendingWs.send(JSON.stringify({
+      type: 'connected',
+      remoteId: remoteId,
+      sessionId: sessionId,
+      iceServers: message.iceServers,
     }));
   }
 
