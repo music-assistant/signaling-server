@@ -16,12 +16,19 @@ export interface Env {
   ENVIRONMENT: string;
 }
 
+interface IceServerConfig {
+  urls: string | string[];
+  username?: string;
+  credential?: string;
+}
+
 interface SignalingMessage {
   type: string;
   remoteId?: string;
   sessionId?: string;
   data?: any;
   error?: string;
+  iceServers?: IceServerConfig[];
 }
 
 // Generate a unique session ID
@@ -82,8 +89,8 @@ export default {
 export class SignalingRoom {
   private state: DurableObjectState;
 
-  // Map of Remote ID -> WebSocket (MA server instances)
-  private servers: Map<string, WebSocket> = new Map();
+  // Map of Remote ID -> { ws, iceServers } (MA server instances)
+  private servers: Map<string, { ws: WebSocket; iceServers?: IceServerConfig[] }> = new Map();
 
   // Map of Session ID -> { clientWs, remoteId } (PWA clients)
   private clients: Map<string, { ws: WebSocket; remoteId: string }> = new Map();
@@ -205,6 +212,11 @@ export class SignalingRoom {
     const existingMetadata = this.wsMetadata.get(ws);
     if (existingMetadata && existingMetadata.type === 'server' && existingMetadata.id === remoteId) {
       console.log(`WebSocket already registered for ${remoteId}, skipping duplicate registration`);
+      // Update ICE servers if provided
+      const existingServer = this.servers.get(remoteId);
+      if (existingServer && message.iceServers) {
+        existingServer.iceServers = message.iceServers;
+      }
       // Just send confirmation again
       ws.send(JSON.stringify({
         type: 'registered',
@@ -214,21 +226,22 @@ export class SignalingRoom {
     }
 
     // Check if Remote ID is already registered with a DIFFERENT WebSocket
-    const existingWs = this.servers.get(remoteId);
-    if (existingWs && existingWs !== ws) {
+    const existingServer = this.servers.get(remoteId);
+    if (existingServer && existingServer.ws !== ws) {
       console.log(`[${remoteId}] Replacing existing connection (different WebSocket)`);
       // Clean up old connection COMPLETELY before closing to prevent its disconnect handler from interfering
       this.servers.delete(remoteId);
-      this.wsMetadata.delete(existingWs);
+      this.wsMetadata.delete(existingServer.ws);
       // Close old WebSocket - its disconnect handler will do nothing since metadata is gone
-      existingWs.close(4000, 'Replaced by new connection');
+      existingServer.ws.close(4000, 'Replaced by new connection');
     }
 
-    // Register the new server connection
-    this.servers.set(remoteId, ws);
+    // Register the new server connection with ICE servers
+    this.servers.set(remoteId, { ws, iceServers: message.iceServers });
     this.wsMetadata.set(ws, { type: 'server', id: remoteId });
 
-    console.log(`✓ Server registered: ${remoteId}`);
+    const iceServerCount = message.iceServers?.length || 0;
+    console.log(`✓ Server registered: ${remoteId} (with ${iceServerCount} ICE servers)`);
 
     ws.send(JSON.stringify({
       type: 'registered',
@@ -247,8 +260,8 @@ export class SignalingRoom {
     }
 
     // Check if the server is online
-    const serverWs = this.servers.get(remoteId);
-    if (!serverWs) {
+    const serverData = this.servers.get(remoteId);
+    if (!serverData) {
       this.sendError(ws, 'Server not found. Make sure your Music Assistant server is running and has Remote Access enabled.');
       return;
     }
@@ -262,15 +275,16 @@ export class SignalingRoom {
 
     console.log(`Client connected to ${remoteId} with session ${sessionId}`);
 
-    // Notify the client that connection is established
+    // Notify the client that connection is established, including ICE servers from the server
     ws.send(JSON.stringify({
       type: 'connected',
       remoteId: remoteId,
       sessionId: sessionId,
+      iceServers: serverData.iceServers,
     }));
 
     // Notify the server about the new client
-    serverWs.send(JSON.stringify({
+    serverData.ws.send(JSON.stringify({
       type: 'client-connected',
       sessionId: sessionId,
     }));
@@ -295,13 +309,13 @@ export class SignalingRoom {
         return;
       }
 
-      const serverWs = this.servers.get(clientData.remoteId);
-      if (!serverWs) {
+      const serverData = this.servers.get(clientData.remoteId);
+      if (!serverData) {
         this.sendError(ws, 'Server disconnected');
         return;
       }
 
-      serverWs.send(JSON.stringify({
+      serverData.ws.send(JSON.stringify({
         ...message,
         sessionId: sessionId,
       }));
@@ -336,11 +350,11 @@ export class SignalingRoom {
 
     if (metadata.type === 'server') {
       const remoteId = metadata.id;
-      const currentWs = this.servers.get(remoteId);
+      const serverData = this.servers.get(remoteId);
 
       // Only delete if this WebSocket is still the registered one
       // (prevents race condition when old connection closes after new one registers)
-      if (currentWs === ws) {
+      if (serverData && serverData.ws === ws) {
         // This is the active connection being closed
         this.servers.delete(remoteId);
         this.wsMetadata.delete(ws);
@@ -366,9 +380,9 @@ export class SignalingRoom {
 
       if (clientData) {
         // Notify the server that the client disconnected
-        const serverWs = this.servers.get(clientData.remoteId);
-        if (serverWs) {
-          serverWs.send(JSON.stringify({
+        const serverData = this.servers.get(clientData.remoteId);
+        if (serverData) {
+          serverData.ws.send(JSON.stringify({
             type: 'client-disconnected',
             sessionId: sessionId,
           }));
