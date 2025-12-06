@@ -170,7 +170,7 @@ export class SignalingRoom {
   }
 
   private handleMessage(ws: WebSocket, message: SignalingMessage): void {
-    console.log('Received message:', message.type);
+    console.log('Received message:', message.type, message.sessionId ? `sessionId=${message.sessionId}` : '', message.iceServers ? `iceServers=${message.iceServers.length}` : '');
 
     switch (message.type) {
       case 'ping':
@@ -313,6 +313,8 @@ export class SignalingRoom {
    */
   private handleSessionReady(ws: WebSocket, message: SignalingMessage): void {
     const sessionId = message.sessionId;
+    console.log(`[handleSessionReady] sessionId=${sessionId}, raw message keys:`, Object.keys(message));
+
     if (!sessionId) {
       this.sendError(ws, 'Session ID required');
       return;
@@ -337,15 +339,21 @@ export class SignalingRoom {
     this.pendingClients.delete(sessionId);
     this.clients.set(sessionId, { ws: pendingWs, remoteId });
 
-    console.log(`Session ${sessionId} ready with fresh ICE servers`);
+    // Extract ICE servers from message
+    const iceServers = message.iceServers;
+    const iceServerCount = iceServers?.length || 0;
+    console.log(`Session ${sessionId} ready with ${iceServerCount} fresh ICE servers, iceServers type:`, typeof iceServers, Array.isArray(iceServers));
 
     // Send connected to client with fresh ICE servers from the server
-    pendingWs.send(JSON.stringify({
+    const connectedMsg = {
       type: 'connected',
       remoteId: remoteId,
       sessionId: sessionId,
-      iceServers: message.iceServers,
-    }));
+      iceServers: iceServers,
+    };
+    const jsonToSend = JSON.stringify(connectedMsg);
+    console.log(`Sending connected to client, json length: ${jsonToSend.length}`);
+    pendingWs.send(jsonToSend);
   }
 
   /**
