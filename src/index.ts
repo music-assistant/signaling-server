@@ -9,36 +9,15 @@
  * - PWA clients connect and request connection to a Remote ID
  * - Server brokers WebRTC signaling (SDP offers/answers, ICE candidates)
  * - Uses Durable Objects to maintain WebSocket connections
+ *
+ * This implementation uses the shared SignalingCore for business logic.
  */
+
+import { SignalingCore, SignalingMessage } from './signaling-core';
 
 export interface Env {
   SIGNALING_ROOM: DurableObjectNamespace;
   ENVIRONMENT: string;
-}
-
-interface IceServerConfig {
-  urls: string | string[];
-  username?: string;
-  credential?: string;
-}
-
-interface SignalingMessage {
-  type: string;
-  remoteId?: string;
-  sessionId?: string;
-  data?: any;
-  error?: string;
-  iceServers?: IceServerConfig[];
-}
-
-// Generate a unique session ID
-function generateSessionId(): string {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-  let result = '';
-  for (let i = 0; i < 16; i++) {
-    result += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return result;
 }
 
 /**
@@ -58,9 +37,9 @@ export default {
 
     // Health check endpoint
     if (url.pathname === '/health') {
-      return new Response(JSON.stringify({ status: 'ok', version: '1.0.0' }), {
-        headers: { 'Content-Type': 'application/json' },
-      });
+      const roomId = env.SIGNALING_ROOM.idFromName('global');
+      const room = env.SIGNALING_ROOM.get(roomId);
+      return room.fetch(new Request(`${url.origin}/stats`, { method: 'GET' }));
     }
 
     // API endpoint to check if a remote ID is online
@@ -85,33 +64,57 @@ export default {
 /**
  * Signaling Room Durable Object
  * Maintains WebSocket connections and handles signaling messages
+ * Uses the shared SignalingCore for all business logic.
  */
 export class SignalingRoom {
   private state: DurableObjectState;
+  private core: SignalingCore<WebSocket>;
 
-  // Map of Remote ID -> { ws, iceServers } (MA server instances)
-  private servers: Map<string, { ws: WebSocket; iceServers?: IceServerConfig[] }> = new Map();
-
-  // Map of Session ID -> { clientWs, remoteId } (PWA clients)
-  private clients: Map<string, { ws: WebSocket; remoteId: string }> = new Map();
-
-  // Map of Session ID -> pending client connection (waiting for server to provide fresh ICE servers)
-  private pendingClients: Map<string, WebSocket> = new Map();
-
-  // Map of WebSocket -> metadata
-  private wsMetadata: Map<WebSocket, { type: 'server' | 'client'; id: string }> = new Map();
+  // Map of WebSocket -> ping interval ID
+  private pingIntervals: Map<WebSocket, ReturnType<typeof setInterval>> = new Map();
 
   constructor(state: DurableObjectState) {
     this.state = state;
+
+    // Initialize the shared signaling core with Cloudflare-specific callbacks
+    this.core = new SignalingCore<WebSocket>({
+      send: (ws, message) => {
+        try {
+          ws.send(message);
+        } catch (error) {
+          console.error('Failed to send message:', error);
+        }
+      },
+      close: (ws, code, reason) => {
+        try {
+          ws.close(code, reason);
+        } catch (error) {
+          console.error('Failed to close WebSocket:', error);
+        }
+      },
+      log: (message) => console.log(message),
+    });
   }
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
 
+    // Handle stats request
+    if (url.pathname === '/stats') {
+      const stats = this.core.getStats();
+      return new Response(JSON.stringify({
+        status: 'ok',
+        version: '2.0.0',
+        ...stats,
+      }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     // Handle check request
     if (url.pathname.startsWith('/check/')) {
-      const remoteId = url.pathname.split('/').pop()?.toUpperCase();
-      const isOnline = remoteId ? this.servers.has(remoteId) : false;
+      const remoteId = url.pathname.split('/').pop() || '';
+      const isOnline = this.core.isOnline(remoteId);
       return new Response(JSON.stringify({ online: isOnline }), {
         headers: { 'Content-Type': 'application/json' },
       });
@@ -147,324 +150,34 @@ export class SignalingRoom {
       }
     }, 30000);
 
+    this.pingIntervals.set(ws, pingInterval);
+
     ws.addEventListener('message', (event) => {
       try {
         const message: SignalingMessage = JSON.parse(event.data as string);
-        this.handleMessage(ws, message);
+        this.core.handleMessage(ws, message);
       } catch (error) {
         console.error('Failed to parse message:', error);
-        this.sendError(ws, 'Invalid message format');
+        ws.send(JSON.stringify({ type: 'error', error: 'Invalid message format' }));
       }
     });
 
     ws.addEventListener('close', () => {
-      clearInterval(pingInterval);
-      this.handleDisconnect(ws);
+      this.cleanup(ws);
     });
 
     ws.addEventListener('error', (error) => {
       console.error('WebSocket error:', error);
-      clearInterval(pingInterval);
-      this.handleDisconnect(ws);
+      this.cleanup(ws);
     });
   }
 
-  private handleMessage(ws: WebSocket, message: SignalingMessage): void {
-    console.log('Received message:', message.type, message.sessionId ? `sessionId=${message.sessionId}` : '', message.iceServers ? `iceServers=${message.iceServers.length}` : '');
-
-    switch (message.type) {
-      case 'ping':
-        // Respond to ping with pong
-        ws.send(JSON.stringify({ type: 'pong' }));
-        break;
-
-      case 'pong':
-        // Client responded to our ping, connection is alive
-        break;
-
-      case 'register-server':
-        this.handleServerRegister(ws, message);
-        break;
-
-      case 'connect-request':
-        this.handleConnectRequest(ws, message);
-        break;
-
-      case 'session-ready':
-        this.handleSessionReady(ws, message);
-        break;
-
-      case 'offer':
-      case 'answer':
-      case 'ice-candidate':
-        this.forwardSignalingMessage(ws, message);
-        break;
-
-      default:
-        this.sendError(ws, `Unknown message type: ${message.type}`);
+  private cleanup(ws: WebSocket): void {
+    const pingInterval = this.pingIntervals.get(ws);
+    if (pingInterval) {
+      clearInterval(pingInterval);
+      this.pingIntervals.delete(ws);
     }
-  }
-
-  /**
-   * Handle MA server registration
-   */
-  private handleServerRegister(ws: WebSocket, message: SignalingMessage): void {
-    const remoteId = message.remoteId?.toUpperCase();
-    if (!remoteId) {
-      this.sendError(ws, 'Remote ID required');
-      return;
-    }
-
-    // Check if this WebSocket is already registered (duplicate registration attempt)
-    const existingMetadata = this.wsMetadata.get(ws);
-    if (existingMetadata && existingMetadata.type === 'server' && existingMetadata.id === remoteId) {
-      console.log(`WebSocket already registered for ${remoteId}, skipping duplicate registration`);
-      // Update ICE servers if provided
-      const existingServer = this.servers.get(remoteId);
-      if (existingServer && message.iceServers) {
-        existingServer.iceServers = message.iceServers;
-      }
-      // Just send confirmation again
-      ws.send(JSON.stringify({
-        type: 'registered',
-        remoteId: remoteId,
-      }));
-      return;
-    }
-
-    // Check if Remote ID is already registered with a DIFFERENT WebSocket
-    const existingServer = this.servers.get(remoteId);
-    if (existingServer && existingServer.ws !== ws) {
-      console.log(`[${remoteId}] Replacing existing connection (different WebSocket)`);
-      // Clean up old connection COMPLETELY before closing to prevent its disconnect handler from interfering
-      this.servers.delete(remoteId);
-      this.wsMetadata.delete(existingServer.ws);
-      // Close old WebSocket - its disconnect handler will do nothing since metadata is gone
-      existingServer.ws.close(4000, 'Replaced by new connection');
-    }
-
-    // Register the new server connection with ICE servers
-    this.servers.set(remoteId, { ws, iceServers: message.iceServers });
-    this.wsMetadata.set(ws, { type: 'server', id: remoteId });
-
-    const iceServerCount = message.iceServers?.length || 0;
-    console.log(`✓ Server registered: ${remoteId} (with ${iceServerCount} ICE servers)`);
-
-    ws.send(JSON.stringify({
-      type: 'registered',
-      remoteId: remoteId,
-    }));
-  }
-
-  /**
-   * Handle PWA client connection request
-   */
-  private handleConnectRequest(ws: WebSocket, message: SignalingMessage): void {
-    const remoteId = message.remoteId?.toUpperCase();
-    if (!remoteId) {
-      this.sendError(ws, 'Remote ID required');
-      return;
-    }
-
-    // Check if the server is online
-    const serverData = this.servers.get(remoteId);
-    if (!serverData) {
-      this.sendError(ws, 'Server not found. Make sure your Music Assistant server is running and has Remote Access enabled.');
-      return;
-    }
-
-    // Generate a session ID for this connection
-    const sessionId = generateSessionId();
-
-    // Store pending client - we'll complete the connection when server sends fresh ICE servers
-    this.pendingClients.set(sessionId, ws);
-    this.wsMetadata.set(ws, { type: 'client', id: sessionId });
-
-    console.log(`Client ${sessionId} requesting connection to ${remoteId}, waiting for fresh ICE servers`);
-
-    // Request fresh ICE servers from the server
-    // Server will respond with 'session-ready' containing fresh TURN credentials
-    serverData.ws.send(JSON.stringify({
-      type: 'client-connected',
-      sessionId: sessionId,
-    }));
-
-    // Set a timeout - if server doesn't respond within 10 seconds, use cached ICE servers
-    setTimeout(() => {
-      const pendingWs = this.pendingClients.get(sessionId);
-      if (pendingWs) {
-        console.log(`Timeout waiting for fresh ICE servers for session ${sessionId}, using cached`);
-        this.pendingClients.delete(sessionId);
-        this.clients.set(sessionId, { ws: pendingWs, remoteId });
-
-        // Send connected with cached ICE servers as fallback
-        pendingWs.send(JSON.stringify({
-          type: 'connected',
-          remoteId: remoteId,
-          sessionId: sessionId,
-          iceServers: serverData.iceServers,
-        }));
-      }
-    }, 10000);
-  }
-
-  /**
-   * Handle session-ready message from MA server with fresh ICE servers
-   */
-  private handleSessionReady(ws: WebSocket, message: SignalingMessage): void {
-    const sessionId = message.sessionId;
-    console.log(`[handleSessionReady] sessionId=${sessionId}, raw message keys:`, Object.keys(message));
-
-    if (!sessionId) {
-      this.sendError(ws, 'Session ID required');
-      return;
-    }
-
-    const pendingWs = this.pendingClients.get(sessionId);
-    if (!pendingWs) {
-      // Client may have already been handled by timeout or disconnected
-      console.log(`Session ${sessionId} not pending (already handled or disconnected)`);
-      return;
-    }
-
-    // Get the remote ID from server metadata
-    const serverMetadata = this.wsMetadata.get(ws);
-    if (!serverMetadata || serverMetadata.type !== 'server') {
-      this.sendError(ws, 'Not a registered server');
-      return;
-    }
-    const remoteId = serverMetadata.id;
-
-    // Move from pending to active clients
-    this.pendingClients.delete(sessionId);
-    this.clients.set(sessionId, { ws: pendingWs, remoteId });
-
-    // Extract ICE servers from message
-    const iceServers = message.iceServers;
-    const iceServerCount = iceServers?.length || 0;
-    console.log(`Session ${sessionId} ready with ${iceServerCount} fresh ICE servers, iceServers type:`, typeof iceServers, Array.isArray(iceServers));
-
-    // Send connected to client with fresh ICE servers from the server
-    const connectedMsg = {
-      type: 'connected',
-      remoteId: remoteId,
-      sessionId: sessionId,
-      iceServers: iceServers,
-    };
-    const jsonToSend = JSON.stringify(connectedMsg);
-    console.log(`Sending connected to client, json length: ${jsonToSend.length}`);
-    pendingWs.send(jsonToSend);
-  }
-
-  /**
-   * Forward signaling messages between client and server
-   */
-  private forwardSignalingMessage(ws: WebSocket, message: SignalingMessage): void {
-    const metadata = this.wsMetadata.get(ws);
-    if (!metadata) {
-      this.sendError(ws, 'Not registered');
-      return;
-    }
-
-    if (metadata.type === 'client') {
-      // Client -> Server
-      const sessionId = metadata.id;
-      const clientData = this.clients.get(sessionId);
-      if (!clientData) {
-        this.sendError(ws, 'Session not found');
-        return;
-      }
-
-      const serverData = this.servers.get(clientData.remoteId);
-      if (!serverData) {
-        this.sendError(ws, 'Server disconnected');
-        return;
-      }
-
-      serverData.ws.send(JSON.stringify({
-        ...message,
-        sessionId: sessionId,
-      }));
-    } else if (metadata.type === 'server') {
-      // Server -> Client
-      const sessionId = message.sessionId;
-      if (!sessionId) {
-        this.sendError(ws, 'Session ID required');
-        return;
-      }
-
-      const clientData = this.clients.get(sessionId);
-      if (!clientData) {
-        this.sendError(ws, 'Client not found');
-        return;
-      }
-
-      clientData.ws.send(JSON.stringify(message));
-    }
-  }
-
-  /**
-   * Handle WebSocket disconnection
-   */
-  private handleDisconnect(ws: WebSocket): void {
-    const metadata = this.wsMetadata.get(ws);
-    if (!metadata) {
-      // WebSocket closed but has no metadata - likely already cleaned up during re-registration
-      console.log('Disconnect event for WebSocket with no metadata (already cleaned up)');
-      return;
-    }
-
-    if (metadata.type === 'server') {
-      const remoteId = metadata.id;
-      const serverData = this.servers.get(remoteId);
-
-      // Only delete if this WebSocket is still the registered one
-      // (prevents race condition when old connection closes after new one registers)
-      if (serverData && serverData.ws === ws) {
-        // This is the active connection being closed
-        this.servers.delete(remoteId);
-        this.wsMetadata.delete(ws);
-        console.log(`✗ Server disconnected: ${remoteId} (was active connection)`);
-
-        // Notify all clients connected to this server
-        for (const [sessionId, clientData] of this.clients.entries()) {
-          if (clientData.remoteId === remoteId) {
-            clientData.ws.send(JSON.stringify({
-              type: 'peer-disconnected',
-            }));
-            this.clients.delete(sessionId);
-          }
-        }
-      } else {
-        // This is an old connection that was already replaced
-        this.wsMetadata.delete(ws);
-        console.log(`[${remoteId}] Old connection closed (was already replaced by new connection)`);
-      }
-    } else if (metadata.type === 'client') {
-      const sessionId = metadata.id;
-      const clientData = this.clients.get(sessionId);
-
-      if (clientData) {
-        // Notify the server that the client disconnected
-        const serverData = this.servers.get(clientData.remoteId);
-        if (serverData) {
-          serverData.ws.send(JSON.stringify({
-            type: 'client-disconnected',
-            sessionId: sessionId,
-          }));
-        }
-        this.clients.delete(sessionId);
-      }
-
-      this.wsMetadata.delete(ws);
-      console.log(`Client disconnected: ${sessionId}`);
-    }
-  }
-
-  private sendError(ws: WebSocket, error: string): void {
-    ws.send(JSON.stringify({
-      type: 'error',
-      error: error,
-    }));
+    this.core.handleDisconnect(ws);
   }
 }
