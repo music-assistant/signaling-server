@@ -114,11 +114,6 @@ export class SignalingCore<WS> {
    * Handle an incoming message from a WebSocket
    */
   handleMessage(ws: WS, message: SignalingMessage): void {
-    const logExtra: string[] = [];
-    if (message.sessionId) logExtra.push(`sessionId=${message.sessionId}`);
-    if (message.iceServers) logExtra.push(`iceServers=${message.iceServers.length}`);
-    this.log(`Received: ${message.type} ${logExtra.join(' ')}`);
-
     switch (message.type) {
       case 'ping':
         this.send(ws, { type: 'pong' });
@@ -165,7 +160,6 @@ export class SignalingCore<WS> {
     // Check if this WebSocket is already registered
     const existingMetadata = this.wsMetadata.get(ws);
     if (existingMetadata && existingMetadata.type === 'server' && existingMetadata.id === remoteId) {
-      this.log(`WebSocket already registered for ${remoteId}, updating ICE servers`);
       const existingServer = this.servers.get(remoteId);
       if (existingServer && message.iceServers) {
         existingServer.iceServers = message.iceServers;
@@ -177,7 +171,6 @@ export class SignalingCore<WS> {
     // Check if Remote ID is already registered with a DIFFERENT WebSocket
     const existingServer = this.servers.get(remoteId);
     if (existingServer && existingServer.ws !== ws) {
-      this.log(`[${remoteId}] Replacing existing connection (different WebSocket)`);
       this.servers.delete(remoteId);
       this.wsMetadata.delete(existingServer.ws);
       this.closeFn(existingServer.ws, 4000, 'Replaced by new connection');
@@ -187,8 +180,7 @@ export class SignalingCore<WS> {
     this.servers.set(remoteId, { ws, iceServers: message.iceServers });
     this.wsMetadata.set(ws, { type: 'server', id: remoteId });
 
-    const iceServerCount = message.iceServers?.length || 0;
-    this.log(`✓ Server registered: ${remoteId} (with ${iceServerCount} ICE servers)`);
+    this.log(`✓ Server registered: ${remoteId}`);
     this.send(ws, { type: 'registered', remoteId });
   }
 
@@ -214,7 +206,6 @@ export class SignalingCore<WS> {
     const timeoutId = setTimeout(() => {
       const pending = this.pendingClients.get(sessionId);
       if (pending) {
-        this.log(`Timeout waiting for fresh ICE servers for session ${sessionId}, using cached`);
         this.pendingClients.delete(sessionId);
         this.clients.set(sessionId, { ws: pending.ws, remoteId });
 
@@ -231,8 +222,6 @@ export class SignalingCore<WS> {
     this.pendingClients.set(sessionId, { ws, remoteId, timeout: timeoutId });
     this.wsMetadata.set(ws, { type: 'client', id: sessionId });
 
-    this.log(`Client ${sessionId} requesting connection to ${remoteId}, waiting for fresh ICE servers`);
-
     // Request fresh ICE servers from the server
     this.send(serverData.ws, {
       type: 'client-connected',
@@ -245,7 +234,6 @@ export class SignalingCore<WS> {
    */
   private handleSessionReady(ws: WS, message: SignalingMessage): void {
     const sessionId = message.sessionId;
-    this.log(`[handleSessionReady] sessionId=${sessionId}, message keys: ${Object.keys(message).join(', ')}`);
 
     if (!sessionId) {
       this.sendError(ws, 'Session ID required');
@@ -254,7 +242,6 @@ export class SignalingCore<WS> {
 
     const pending = this.pendingClients.get(sessionId);
     if (!pending) {
-      this.log(`Session ${sessionId} not pending (already handled or disconnected)`);
       return;
     }
 
@@ -277,8 +264,6 @@ export class SignalingCore<WS> {
 
     // Extract ICE servers from message
     const iceServers = message.iceServers;
-    const iceServerCount = iceServers?.length || 0;
-    this.log(`Session ${sessionId} ready with ${iceServerCount} fresh ICE servers`);
 
     // Send connected to client with fresh ICE servers from the server
     this.send(pending.ws, {
@@ -370,7 +355,6 @@ export class SignalingCore<WS> {
         }
       } else {
         this.wsMetadata.delete(ws);
-        this.log(`[${remoteId}] Old connection closed (was already replaced)`);
       }
     } else if (metadata.type === 'client') {
       const sessionId = metadata.id;
@@ -393,7 +377,6 @@ export class SignalingCore<WS> {
       }
 
       this.wsMetadata.delete(ws);
-      this.log(`✗ Client disconnected: ${sessionId}`);
     }
   }
 

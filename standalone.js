@@ -48,18 +48,12 @@ function handleMessage(ws, message) {
     return;
   }
 
-  const logExtra = [];
-  if (msg.sessionId) logExtra.push(`sessionId=${msg.sessionId}`);
-  if (msg.iceServers) logExtra.push(`iceServers=${msg.iceServers.length}`);
-  console.log(`[${new Date().toISOString()}] Received: ${msg.type} ${logExtra.join(' ')}`);
-
   switch (msg.type) {
     case 'ping':
       ws.send(JSON.stringify({ type: 'pong' }));
       break;
 
     case 'pong':
-      // Client responded to ping, connection is alive
       break;
 
     case 'register-server':
@@ -86,9 +80,6 @@ function handleMessage(ws, message) {
   }
 }
 
-/**
- * Handle MA server registration
- */
 function handleServerRegister(ws, msg) {
   const remoteId = msg.remoteId?.toUpperCase();
   if (!remoteId) {
@@ -96,10 +87,8 @@ function handleServerRegister(ws, msg) {
     return;
   }
 
-  // Check if this WebSocket is already registered
   const existingMetadata = wsMetadata.get(ws);
   if (existingMetadata && existingMetadata.type === 'server' && existingMetadata.id === remoteId) {
-    console.log(`WebSocket already registered for ${remoteId}, updating ICE servers`);
     const existingServer = servers.get(remoteId);
     if (existingServer && msg.iceServers) {
       existingServer.iceServers = msg.iceServers;
@@ -108,27 +97,20 @@ function handleServerRegister(ws, msg) {
     return;
   }
 
-  // Check if Remote ID is already registered with a DIFFERENT WebSocket
   const existingServer = servers.get(remoteId);
   if (existingServer && existingServer.ws !== ws) {
-    console.log(`[${remoteId}] Replacing existing connection (different WebSocket)`);
     servers.delete(remoteId);
     wsMetadata.delete(existingServer.ws);
     existingServer.ws.close(4000, 'Replaced by new connection');
   }
 
-  // Register the new server connection with ICE servers
   servers.set(remoteId, { ws, iceServers: msg.iceServers });
   wsMetadata.set(ws, { type: 'server', id: remoteId });
 
-  const iceServerCount = msg.iceServers?.length || 0;
-  console.log(`✓ Server registered: ${remoteId} (with ${iceServerCount} ICE servers)`);
+  console.log(`✓ Server registered: ${remoteId}`);
   ws.send(JSON.stringify({ type: 'registered', remoteId }));
 }
 
-/**
- * Handle PWA client connection request
- */
 function handleConnectRequest(ws, msg) {
   const remoteId = msg.remoteId?.toUpperCase();
   if (!remoteId) {
@@ -144,15 +126,12 @@ function handleConnectRequest(ws, msg) {
 
   const sessionId = generateSessionId();
 
-  // Store pending client - we'll complete the connection when server sends fresh ICE servers
+  // Store pending client - complete when server sends fresh ICE servers
   const timeoutId = setTimeout(() => {
     const pending = pendingClients.get(sessionId);
     if (pending) {
-      console.log(`Timeout waiting for fresh ICE servers for session ${sessionId}, using cached`);
       pendingClients.delete(sessionId);
       clients.set(sessionId, { ws: pending.ws, remoteId });
-
-      // Send connected with cached ICE servers as fallback
       pending.ws.send(JSON.stringify({
         type: 'connected',
         remoteId: remoteId,
@@ -165,22 +144,14 @@ function handleConnectRequest(ws, msg) {
   pendingClients.set(sessionId, { ws, remoteId, timeout: timeoutId });
   wsMetadata.set(ws, { type: 'client', id: sessionId });
 
-  console.log(`Client ${sessionId} requesting connection to ${remoteId}, waiting for fresh ICE servers`);
-
-  // Request fresh ICE servers from the server
   serverData.ws.send(JSON.stringify({
     type: 'client-connected',
     sessionId: sessionId,
   }));
 }
 
-/**
- * Handle session-ready message from MA server with fresh ICE servers
- */
 function handleSessionReady(ws, msg) {
   const sessionId = msg.sessionId;
-  console.log(`[handleSessionReady] sessionId=${sessionId}, message keys: ${Object.keys(msg).join(', ')}`);
-
   if (!sessionId) {
     sendError(ws, 'Session ID required');
     return;
@@ -188,11 +159,9 @@ function handleSessionReady(ws, msg) {
 
   const pending = pendingClients.get(sessionId);
   if (!pending) {
-    console.log(`Session ${sessionId} not pending (already handled or disconnected)`);
     return;
   }
 
-  // Get the remote ID from server metadata
   const serverMetadata = wsMetadata.get(ws);
   if (!serverMetadata || serverMetadata.type !== 'server') {
     sendError(ws, 'Not a registered server');
@@ -200,32 +169,18 @@ function handleSessionReady(ws, msg) {
   }
   const remoteId = serverMetadata.id;
 
-  // Clear the timeout
   clearTimeout(pending.timeout);
-
-  // Move from pending to active clients
   pendingClients.delete(sessionId);
   clients.set(sessionId, { ws: pending.ws, remoteId });
 
-  // Extract ICE servers from message
-  const iceServers = msg.iceServers;
-  const iceServerCount = iceServers?.length || 0;
-  console.log(`Session ${sessionId} ready with ${iceServerCount} fresh ICE servers`);
-
-  // Send connected to client with fresh ICE servers from the server
-  const connectedMsg = {
+  pending.ws.send(JSON.stringify({
     type: 'connected',
     remoteId: remoteId,
     sessionId: sessionId,
-    iceServers: iceServers,
-  };
-  console.log(`Sending connected to client with ${iceServerCount} ICE servers`);
-  pending.ws.send(JSON.stringify(connectedMsg));
+    iceServers: msg.iceServers,
+  }));
 }
 
-/**
- * Forward signaling messages between client and server
- */
 function forwardSignalingMessage(ws, msg) {
   const metadata = wsMetadata.get(ws);
   if (!metadata) {
