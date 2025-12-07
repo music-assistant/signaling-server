@@ -12,6 +12,9 @@
  * 3. Implement the send callback
  */
 
+export { RateLimiter } from './rate-limiter';
+import { RateLimiter } from './rate-limiter';
+
 export interface IceServerConfig {
   urls: string | string[];
   username?: string;
@@ -76,6 +79,12 @@ export class SignalingCore<WS> {
   // Map of WebSocket -> metadata
   public wsMetadata: Map<WS, ConnectionMetadata> = new Map();
 
+  // Map of WebSocket -> client IP (for rate limiting)
+  public wsClientIp: Map<WS, string> = new Map();
+
+  // Rate limiter instance
+  public rateLimiter: RateLimiter;
+
   // Callback to send a message to a WebSocket
   private sendFn: (ws: WS, message: string) => void;
 
@@ -88,14 +97,49 @@ export class SignalingCore<WS> {
   // Timeout for waiting for fresh ICE servers (ms)
   private readonly FRESH_ICE_TIMEOUT = 10000;
 
+  // Cleanup interval for rate limiter
+  private cleanupInterval?: ReturnType<typeof setInterval>;
+
   constructor(options: {
     send: (ws: WS, message: string) => void;
     close: (ws: WS, code: number, reason: string) => void;
     log?: (message: string) => void;
+    rateLimiter?: RateLimiter;
   }) {
     this.sendFn = options.send;
     this.closeFn = options.close;
     this.logFn = options.log || console.log;
+    this.rateLimiter = options.rateLimiter || new RateLimiter();
+
+    // Set up periodic cleanup of rate limiter (every 5 minutes)
+    this.cleanupInterval = setInterval(() => {
+      this.rateLimiter.cleanup();
+    }, 300000);
+  }
+
+  /**
+   * Register a WebSocket with its client IP for rate limiting
+   */
+  setClientIp(ws: WS, ip: string): void {
+    this.wsClientIp.set(ws, ip);
+  }
+
+  /**
+   * Check rate limit for a WebSocket. Returns false if blocked.
+   */
+  checkRateLimit(ws: WS): boolean {
+    const ip = this.wsClientIp.get(ws);
+    if (!ip) return true; // No IP tracking, allow
+
+    const result = this.rateLimiter.checkRequest(ip);
+    if (!result.allowed) {
+      this.send(ws, {
+        type: 'error',
+        error: `Rate limited. Try again in ${result.retryAfter} seconds.`
+      });
+      return false;
+    }
+    return true;
   }
 
   private send(ws: WS, message: object): void {
@@ -114,6 +158,13 @@ export class SignalingCore<WS> {
    * Handle an incoming message from a WebSocket
    */
   handleMessage(ws: WS, message: SignalingMessage): void {
+    // Rate limit check for non-ping/pong messages
+    if (message.type !== 'ping' && message.type !== 'pong') {
+      if (!this.checkRateLimit(ws)) {
+        return;
+      }
+    }
+
     switch (message.type) {
       case 'ping':
         this.send(ws, { type: 'pong' });
@@ -196,6 +247,17 @@ export class SignalingCore<WS> {
 
     const serverData = this.servers.get(remoteId);
     if (!serverData) {
+      // Track failed lookup for brute force detection
+      const ip = this.wsClientIp.get(ws);
+      if (ip) {
+        const blocked = this.rateLimiter.recordFailedLookup(ip);
+        if (blocked) {
+          this.log(`⚠ Blocked IP ${ip} for brute force attempts`);
+          this.sendError(ws, 'Too many failed attempts. You have been temporarily blocked.');
+          this.closeFn(ws, 4008, 'Blocked for brute force');
+          return;
+        }
+      }
       this.sendError(ws, 'Server not found. Make sure your Music Assistant server is running and has Remote Access enabled.');
       return;
     }
@@ -378,6 +440,9 @@ export class SignalingCore<WS> {
 
       this.wsMetadata.delete(ws);
     }
+
+    // Clean up IP mapping
+    this.wsClientIp.delete(ws);
   }
 
   /**
@@ -390,11 +455,17 @@ export class SignalingCore<WS> {
   /**
    * Get stats about connected servers and clients
    */
-  getStats(): { servers: number; clients: number; pendingClients: number } {
+  getStats(): {
+    servers: number;
+    clients: number;
+    pendingClients: number;
+    rateLimiter: { trackedIps: number; blockedIps: number; failedLookupTracked: number };
+  } {
     return {
       servers: this.servers.size,
       clients: this.clients.size,
       pendingClients: this.pendingClients.size,
+      rateLimiter: this.rateLimiter.getStats(),
     };
   }
 }

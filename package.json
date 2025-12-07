@@ -4,8 +4,9 @@
   "description": "WebRTC Signaling Server for Music Assistant Remote Connections",
   "main": "src/index.ts",
   "scripts": {
-    "start": "node standalone.js",
-    "dev:standalone": "node standalone.js",
+    "build": "npx tsc -p tsconfig.standalone.json",
+    "start": "npm run build && node standalone.js",
+    "dev:standalone": "npm run build && node standalone.js",
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "tail": "wrangler tail"

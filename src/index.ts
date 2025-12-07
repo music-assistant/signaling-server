@@ -13,7 +13,16 @@
  * This implementation uses the shared SignalingCore for business logic.
  */
 
-import { SignalingCore, SignalingMessage } from './signaling-core';
+import { SignalingCore, SignalingMessage, RateLimiter } from './signaling-core';
+
+/**
+ * Get client IP from Cloudflare headers
+ */
+function getClientIp(request: Request): string {
+  return request.headers.get('CF-Connecting-IP') ||
+         request.headers.get('X-Forwarded-For')?.split(',')[0]?.trim() ||
+         'unknown';
+}
 
 export interface Env {
   SIGNALING_ROOM: DurableObjectNamespace;
@@ -26,13 +35,23 @@ export interface Env {
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
+    const clientIp = getClientIp(request);
 
     // Handle WebSocket upgrade
     if (url.pathname === '/ws') {
       // Get or create the global signaling room
       const roomId = env.SIGNALING_ROOM.idFromName('global');
       const room = env.SIGNALING_ROOM.get(roomId);
-      return room.fetch(request);
+
+      // Forward request with client IP header
+      const headers = new Headers(request.headers);
+      headers.set('X-Client-IP', clientIp);
+      const forwardedRequest = new Request(request.url, {
+        method: request.method,
+        headers,
+        body: request.body,
+      });
+      return room.fetch(forwardedRequest);
     }
 
     // Health check endpoint
@@ -48,9 +67,10 @@ export default {
       const roomId = env.SIGNALING_ROOM.idFromName('global');
       const room = env.SIGNALING_ROOM.get(roomId);
 
-      // Forward check request to the Durable Object
+      // Forward check request to the Durable Object with client IP
       const checkRequest = new Request(`${url.origin}/check/${remoteId}`, {
         method: 'GET',
+        headers: { 'X-Client-IP': clientIp },
       });
       return room.fetch(checkRequest);
     }
@@ -69,12 +89,22 @@ export default {
 export class SignalingRoom {
   private state: DurableObjectState;
   private core: SignalingCore<WebSocket>;
+  private rateLimiter: RateLimiter;
 
   // Map of WebSocket -> ping interval ID
   private pingIntervals: Map<WebSocket, ReturnType<typeof setInterval>> = new Map();
 
   constructor(state: DurableObjectState) {
     this.state = state;
+
+    // Create shared rate limiter
+    this.rateLimiter = new RateLimiter({
+      windowMs: 60000,        // 1 minute window
+      maxRequests: 100,       // 100 requests per minute per IP
+      maxFailedLookups: 10,   // 10 failed server ID lookups before block
+      failedLookupWindowMs: 60000,  // 1 minute window for failed lookups
+      baseBlockDurationMs: 60000,   // Start with 1 minute block, exponential backoff
+    });
 
     // Initialize the shared signaling core with Cloudflare-specific callbacks
     this.core = new SignalingCore<WebSocket>({
@@ -93,13 +123,15 @@ export class SignalingRoom {
         }
       },
       log: (message) => console.log(message),
+      rateLimiter: this.rateLimiter,
     });
   }
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
+    const clientIp = request.headers.get('X-Client-IP') || 'unknown';
 
-    // Handle stats request
+    // Handle stats request (no rate limiting for stats)
     if (url.pathname === '/stats') {
       const stats = this.core.getStats();
       return new Response(JSON.stringify({
@@ -111,10 +143,40 @@ export class SignalingRoom {
       });
     }
 
-    // Handle check request
+    // Handle check request with rate limiting
     if (url.pathname.startsWith('/check/')) {
+      // Rate limit the check endpoint (potential brute force vector)
+      const rateCheck = this.rateLimiter.checkRequest(clientIp);
+      if (!rateCheck.allowed) {
+        return new Response(JSON.stringify({
+          error: 'Rate limited',
+          retryAfter: rateCheck.retryAfter,
+        }), {
+          status: 429,
+          headers: {
+            'Content-Type': 'application/json',
+            'Retry-After': String(rateCheck.retryAfter),
+          },
+        });
+      }
+
       const remoteId = url.pathname.split('/').pop() || '';
       const isOnline = this.core.isOnline(remoteId);
+
+      // Track failed lookups for brute force detection
+      if (!isOnline && clientIp !== 'unknown') {
+        const blocked = this.rateLimiter.recordFailedLookup(clientIp);
+        if (blocked) {
+          console.log(`⚠ Blocked IP ${clientIp} for brute force on /check endpoint`);
+          return new Response(JSON.stringify({
+            error: 'Too many failed attempts. You have been temporarily blocked.',
+          }), {
+            status: 429,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+      }
+
       return new Response(JSON.stringify({ online: isOnline }), {
         headers: { 'Content-Type': 'application/json' },
       });
@@ -126,10 +188,25 @@ export class SignalingRoom {
       return new Response('Expected WebSocket', { status: 426 });
     }
 
+    // Rate limit check before accepting WebSocket connection
+    const rateCheck = this.rateLimiter.checkRequest(clientIp);
+    if (!rateCheck.allowed) {
+      return new Response(JSON.stringify({
+        error: 'Rate limited',
+        retryAfter: rateCheck.retryAfter,
+      }), {
+        status: 429,
+        headers: {
+          'Content-Type': 'application/json',
+          'Retry-After': String(rateCheck.retryAfter),
+        },
+      });
+    }
+
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
 
-    this.handleWebSocket(server);
+    this.handleWebSocket(server, clientIp);
 
     return new Response(null, {
       status: 101,
@@ -137,8 +214,11 @@ export class SignalingRoom {
     });
   }
 
-  private handleWebSocket(ws: WebSocket): void {
+  private handleWebSocket(ws: WebSocket, clientIp: string): void {
     ws.accept();
+
+    // Register client IP for rate limiting within signaling core
+    this.core.setClientIp(ws, clientIp);
 
     // Set up ping interval (every 30 seconds)
     const pingInterval = setInterval(() => {
