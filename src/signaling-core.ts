@@ -222,9 +222,14 @@ export class SignalingCore<WS> {
     // Check if Remote ID is already registered with a DIFFERENT WebSocket
     const existingServer = this.servers.get(remoteId);
     if (existingServer && existingServer.ws !== ws) {
+      this.log(`⚠ Server ${remoteId} already registered with different WebSocket, replacing old connection`);
       this.servers.delete(remoteId);
       this.wsMetadata.delete(existingServer.ws);
-      this.closeFn(existingServer.ws, 4000, 'Replaced by new connection');
+      try {
+        this.closeFn(existingServer.ws, 4000, 'Replaced by new connection');
+      } catch (error) {
+        this.log(`⚠ Error closing old connection for ${remoteId}: ${error}`);
+      }
     }
 
     // Register the new server connection with ICE servers

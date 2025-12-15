@@ -145,9 +145,28 @@ wss.on('connection', (ws, req) => {
   // Register client IP for rate limiting
   core.setClientIp(ws, clientIp);
 
-  // Set up ping interval
+  // Track if we're waiting for a pong
+  let isAlive = true;
+
+  // Handle pong responses (WebSocket protocol level)
+  ws.on('pong', () => {
+    isAlive = true;
+  });
+
+  // Set up ping interval using WebSocket protocol pings (not JSON messages)
+  // This properly detects dead connections when network is interrupted
   const pingInterval = setInterval(() => {
+    if (!isAlive) {
+      // No pong received since last ping - connection is dead
+      console.log(`[${new Date().toISOString()}] Connection dead (no pong), terminating: ${clientIp}`);
+      ws.terminate();
+      return;
+    }
+    isAlive = false;
     if (ws.readyState === ws.OPEN) {
+      // Send WebSocket protocol ping (handled automatically by ws library)
+      ws.ping();
+      // Also send application-level ping for backward compatibility
       ws.send(JSON.stringify({ type: 'ping' }));
     }
   }, PING_INTERVAL);
@@ -163,7 +182,8 @@ wss.on('connection', (ws, req) => {
     }
   });
 
-  ws.on('close', () => {
+  ws.on('close', (code, reason) => {
+    console.log(`[${new Date().toISOString()}] WebSocket closed: code=${code}, reason=${reason?.toString() || 'none'}, clientIp=${clientIp}`);
     const interval = pingIntervals.get(ws);
     if (interval) {
       clearInterval(interval);
