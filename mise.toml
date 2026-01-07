@@ -1,0 +1,54 @@
+[tools]
+node = "20"
+
+[env]
+PORT = "8787"
+
+[tasks."docker:build"]
+description = "Build the Docker image"
+run = "docker build -t ma-signaling-server ."
+
+[tasks."docker:build:nocache"]
+description = "Build the Docker image without cache"
+run = "docker build --no-cache -t ma-signaling-server ."
+
+[tasks."docker:down"]
+description = "Stop and remove the container"
+run = "docker stop ma-signaling-server 2>/dev/null || true && docker container rm -f ma-signaling-server 2>/dev/null || true"
+
+[tasks."docker:up"]
+description = "Build and run the container"
+depends = ["docker:build", "docker:down"]
+run = "docker run --rm --name ma-signaling-server -p ${PORT}:${PORT} -e PORT=${PORT} ma-signaling-server"
+
+[tasks."docker:up:detached"]
+description = "Build and run the container in background"
+depends = ["docker:build", "docker:down"]
+run = "docker run -d --name ma-signaling-server -p ${PORT}:${PORT} -e PORT=${PORT} ma-signaling-server"
+
+[tasks."docker:logs"]
+description = "Follow container logs"
+run = "docker logs -f ma-signaling-server"
+
+[tasks."docker:test"]
+description = "Test the Docker image builds and runs successfully"
+run = """
+docker build -t ma-signaling-server:test . && \
+docker run --rm -d --name ma-signaling-test -p 18787:8787 ma-signaling-server:test && \
+sleep 2 && \
+curl -sf http://localhost:18787/health && \
+docker stop ma-signaling-test && \
+echo 'Build and run test passed!'
+"""
+
+[tasks."docker:clean"]
+description = "Remove built Docker images"
+run = "docker rmi ma-signaling-server ma-signaling-server:test 2>/dev/null || true"
+
+[tasks.dev]
+description = "Run local development server"
+run = "pnpm start"
+
+[tasks.build]
+description = "Build TypeScript"
+run = "pnpm build"

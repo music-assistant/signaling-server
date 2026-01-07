@@ -11,23 +11,40 @@ WebRTC signaling server for Music Assistant remote connections. This server enab
 1. Fork this repository
 2. Connect to Render.com
 3. Create a new Web Service pointing to your fork
-4. Set root directory to `/` and start command to `npm start`
+4. Set root directory to `/` and start command to `pnpm start`
 5. Your signaling server will be at `wss://your-app.onrender.com/ws`
 
 ### Option 2: Local Development
 
 ```bash
-npm install
-npm start
+pnpm install
+pnpm start
 # Server runs at ws://localhost:8787/ws
 ```
 
-### Option 3: Cloudflare Workers (Production)
+### Option 3: Using Mise
 
 ```bash
-npm install
-npx wrangler login
-npm run deploy
+mise install        # Install Node.js 20
+mise run dev        # Run locally
+# Or with Docker:
+mise run docker:up  # Build and run with Docker
+# Server runs at ws://localhost:8787/ws
+```
+
+### Option 4: Docker
+
+```bash
+docker run -p 8787:8787 ghcr.io/music-assistant/signaling-server:latest
+# Server runs at ws://localhost:8787/ws
+```
+
+### Option 5: Cloudflare Workers (Production)
+
+```bash
+pnpm install
+pnpm dlx wrangler login
+pnpm deploy
 ```
 
 ## Architecture
@@ -58,30 +75,36 @@ npm run deploy
 
 ## Deployment
 
-### Prerequisites
-
-1. Cloudflare account
-2. Node.js 18+
-3. Wrangler CLI
-
-### Setup
+### Docker (Recommended)
 
 ```bash
-# Install dependencies
-npm install
+docker run -p 8787:8787 ghcr.io/music-assistant/signaling-server:latest
+```
 
-# Login to Cloudflare
-npx wrangler login
+Or use mise tasks for local development:
 
-# Deploy to Cloudflare Workers
-npm run deploy
+```bash
+mise run docker:up          # Build and run
+mise run docker:up:detached # Run in background
+```
+
+### Cloudflare Workers
+
+Prerequisites: Cloudflare account, Node.js 20+, Wrangler CLI
+
+```bash
+pnpm install
+pnpm dlx wrangler login
+pnpm deploy
 ```
 
 ### Local Development
 
 ```bash
-# Start local development server
-npm run dev
+pnpm install
+pnpm start
+# Or with mise:
+mise run dev
 ```
 
 The server will be available at `http://localhost:8787`
@@ -171,10 +194,67 @@ Response:
 
 2. **Remote ID Security**: Remote IDs should be sufficiently random to prevent guessing. The MA server generates these IDs.
 
-3. **Rate Limiting**: Consider adding rate limiting for production deployments.
+3. **Rate Limiting**: Built-in rate limiting protects against brute force attacks on the `/api/check` endpoint and WebSocket connections.
+
+## Docker
+
+### Pre-built Images
+
+Docker images are automatically published to GitHub Container Registry on each release:
+
+```bash
+# Latest version
+docker run -p 8787:8787 ghcr.io/music-assistant/signaling-server:latest
+
+# Specific version
+docker run -p 8787:8787 ghcr.io/music-assistant/signaling-server:2.0.0
+
+# Custom port
+docker run -p 9000:9000 -e PORT=9000 ghcr.io/music-assistant/signaling-server:latest
+```
+
+### Build Locally
+
+```bash
+docker build -t ma-signaling-server .
+docker run -p 8787:8787 ma-signaling-server
+```
+
+### Docker Compose
+
+```yaml
+services:
+  signaling:
+    image: ghcr.io/music-assistant/signaling-server:latest
+    ports:
+      - "8787:8787"
+    environment:
+      - PORT=8787
+    restart: unless-stopped
+```
+
+## Mise Tasks
+
+This project uses [mise](https://mise.jdx.dev/) for version management and task running.
+
+Run `mise run` to see all available tasks.
+
+```bash
+mise run docker:build       # Build the Docker image
+mise run docker:build:nocache # Build without cache
+mise run docker:up          # Build and run container
+mise run docker:up:detached # Build and run in background
+mise run docker:down        # Stop and remove container
+mise run docker:logs        # Follow container logs
+mise run docker:test        # Test build and run
+mise run docker:clean       # Remove built images
+mise run dev                # Run local dev server
+mise run build              # Build TypeScript
+```
 
 ## Environment Variables
 
+- `PORT`: Server port (default: `8787`)
 - `ENVIRONMENT`: Set to "production" or "development"
 
 ## Custom Domain
@@ -190,4 +270,4 @@ routes = [
 ]
 ```
 
-3. Deploy with `npm run deploy`
+3. Deploy with `pnpm deploy`
