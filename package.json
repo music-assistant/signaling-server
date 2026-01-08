@@ -1,23 +1,23 @@
 {
   "name": "ma-signaling-server",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "WebRTC Signaling Server for Music Assistant Remote Connections",
   "main": "src/index.ts",
   "scripts": {
-    "build": "npx tsc -p tsconfig.standalone.json",
-    "start": "npm run build && node standalone.js",
-    "dev:standalone": "npm run build && node standalone.js",
+    "build": "tsc -p tsconfig.standalone.json",
+    "start": "pnpm build && node standalone.js",
+    "dev:standalone": "pnpm build && node standalone.js",
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "tail": "wrangler tail"
   },
   "dependencies": {
-    "ws": "^8.16.0"
+    "ws": "^8.19.0"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20231218.0",
     "@types/node": "^20.10.0",
-    "typescript": "^5.3.3",
+    "typescript": "^5.9.3",
     "wrangler": "^3.22.1"
   }
 }

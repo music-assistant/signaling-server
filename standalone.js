@@ -13,6 +13,7 @@
 const http = require('http');
 const { WebSocketServer } = require('ws');
 const { SignalingCore, RateLimiter } = require('./dist/signaling-core.js');
+const { version } = require('./package.json');
 
 const PORT = process.env.PORT || 8787;
 
@@ -76,7 +77,7 @@ const httpServer = http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
       status: 'ok',
-      version: '2.0.0',
+      version,
       ...stats,
     }));
   } else if (req.url?.startsWith('/api/check/')) {
@@ -112,7 +113,7 @@ const httpServer = http.createServer((req, res) => {
     res.end(`Music Assistant Signaling Server
 
 Status: Running
-Version: 2.0.0 (with ICE server relay support)
+Version: ${version} (with ICE server relay support)
 Connected servers: ${core.servers.size}
 Connected clients: ${core.clients.size}
 Pending clients: ${core.pendingClients.size}
@@ -207,7 +208,7 @@ wss.on('connection', (ws, req) => {
 httpServer.listen(PORT, () => {
   console.log(`
 ╔═══════════════════════════════════════════════════════════╗
-║     Music Assistant Signaling Server v2.0.0               ║
+║     Music Assistant Signaling Server v${version.padEnd(14)}║
 ║     (with ICE server relay support)                       ║
 ╠═══════════════════════════════════════════════════════════╣
 ║                                                           ║
