@@ -2,22 +2,49 @@
   "name": "ma-signaling-server",
   "version": "2.0.1",
   "description": "WebRTC Signaling Server for Music Assistant Remote Connections",
-  "main": "src/index.ts",
+  "type": "module",
+  "author": "Music Assistant",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/music-assistant/signaling-server.git"
+  },
+  "homepage": "https://github.com/music-assistant/signaling-server",
+  "bugs": {
+    "url": "https://github.com/music-assistant/signaling-server/issues"
+  },
+  "main": "dist/standalone.js",
+  "packageManager": "pnpm@12.16.1+sha512.091d1dee7927575661b25dab3c2ae31cafc1c54d6b71ed6a6600cf0c1cb10434a447eae14015f1b23e2e6bedeed79df94a932e2164d2832280dce3fb32f656d1",
+  "engines": {
+    "node": ">=26.0.0"
+  },
   "scripts": {
-    "build": "tsc -p tsconfig.standalone.json",
-    "start": "pnpm build && node standalone.js",
-    "dev:standalone": "pnpm build && node standalone.js",
-    "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
-    "tail": "wrangler tail"
+    "build": "tsc -p tsconfig.json",
+    "start": "pnpm build && node dist/standalone.js",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p test/tsconfig.json",
+    "test": "script/test",
+    "prepare": "husky"
   },
   "dependencies": {
-    "ws": "^8.19.0"
+    "ws": "^8.22.1"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20231218.0",
-    "@types/node": "^20.10.0",
-    "typescript": "^5.9.3",
-    "wrangler": "^3.22.1"
+    "@commitlint/cli": "^21.2.4",
+    "@commitlint/config-conventional": "^21.2.4",
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^26.6.6",
+    "@types/ws": "^8.18.2",
+    "eslint": "^10.14.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-prettier": "^5.5.7",
+    "globals": "^17.14.0",
+    "husky": "^9.1.7",
+    "prettier": "^3.9.10",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.72.1"
   }
 }

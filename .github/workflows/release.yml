@@ -5,39 +5,84 @@ on:
     types:
       - published
 
+# Queue rather than cancel: a release cancelled after its image was pushed but
+# before its provenance was attested leaves a published version with no
+# attestation, and nothing re-runs it.
 concurrency:
   group: '${{ github.workflow }}'
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
-  deploy_container:
-    name: Deploy Container
+  publish_container:
+    name: Publish Container
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
+      # Build provenance: id-token mints the OIDC token the signature is bound
+      # to, attestations grants write access to store it. Both are required, and
+      # a missing one fails at signing time rather than at validation time.
+      id-token: write
+      attestations: write
     steps:
       - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Get version number
         id: version
+        env:
+          GH_REF: ${{ github.ref }}
         run: |
-          version=$(echo "${{ github.ref }}" | awk -F"/" '{print $NF}' )
-          echo "version=$version" >> $GITHUB_OUTPUT
+          version=$(echo "$GH_REF" | awk -F"/" '{print $NF}' )
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Get lowercase owner
+        id: owner
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: echo "owner=$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      # The production host is arm64 (AWS Graviton); CI runners are amd64.
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+
+      # Sets up the docker-container driver, so `Build and push` reliably emits
+      # the containerimage.digest that the attestation below is bound to. The
+      # default `docker` driver is not a dependable source for it.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Login to GitHub Container Registry
-        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push
-        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           push: true
+          platforms: linux/amd64,linux/arm64
           tags: |
-            ghcr.io/${{ github.repository_owner }}/signaling-server:${{ steps.version.outputs.version }}
-            ghcr.io/${{ github.repository_owner }}/signaling-server:latest
+            ghcr.io/${{ steps.owner.outputs.owner }}/signaling-server:${{ steps.version.outputs.version }}
+            ghcr.io/${{ steps.owner.outputs.owner }}/signaling-server:latest
+          # Reported by GET /health, so a deployed image identifies the exact
+          # commit it was built from.
+          build-args: |
+            GIT_COMMIT=${{ github.sha }}
+
+      # Records which workflow, commit and runner produced the image, signed
+      # through Sigstore, so a consumer can verify the image came from this repo
+      # instead of trusting the tag. Attests the digest, which cannot be moved:
+      #   gh attestation verify oci://<image>@<digest> --owner music-assistant
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: 'ghcr.io/${{ steps.owner.outputs.owner }}/signaling-server'
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true

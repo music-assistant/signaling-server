@@ -1,7 +1,5 @@
-# Dependencies
+# Dependencies and build output (built in the container)
 node_modules
-
-# Build output (will be built in container)
 dist
 
 # Git
@@ -14,15 +12,17 @@ dist
 *.swp
 *.swo
 
-# Cloudflare (not needed for standalone)
-wrangler.toml
-.wrangler
-
-# Render
-render.yaml
-
-# GitHub
+# Project tooling not needed in the image
 .github
+.husky
+.mise.toml
+script
+docker-compose.yml
+eslint.config.mjs
+.prettierrc
+.prettierignore
+.commitlintrc.json
+.release-please-manifest.json
 
 # Documentation
 README.md
@@ -31,3 +31,6 @@ LICENSE
 # Misc
 *.log
 .DS_Store
+
+# Tests run from the source tree, not the image
+test

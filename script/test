@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Build, then run the protocol tests against the built server. Node runs the
+# TypeScript test files directly (type stripping), so no extra runner is needed.
+set -e
+
+cd "$(dirname "$0")/.."
+
+pnpm build
+node --test test/

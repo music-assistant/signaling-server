@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -e
+
+cd "$(dirname "$0")/.."
+
+# pnpm comes from mise (.mise.toml) on a laptop and in CI; the Dockerfile uses
+# corepack against the package.json "packageManager" pin instead.
+# In CI the lockfile is the contract: a stale one must fail the build, not fall
+# back to resolving every range afresh and testing a tree nobody pinned. Locally,
+# the fallback keeps a fresh checkout working after a hand-edited package.json.
+if [ -n "${CI:-}" ]; then
+  pnpm install --frozen-lockfile
+else
+  pnpm install --frozen-lockfile || pnpm install
+fi

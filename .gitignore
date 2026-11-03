@@ -1,2 +1,21 @@
-node_modules/
-.wrangler/
+# compiled output
+/dist
+/node_modules
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+
+# IDEs and editors
+/.idea
+.vscode/*
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+
+.pnpm-store/
+.claude/
+*.tsbuildinfo

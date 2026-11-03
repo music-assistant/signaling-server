@@ -1,0 +1,109 @@
+[tools]
+node = "26.13.0"
+pnpm = "12.16.1"
+
+[env]
+PORT = "8787"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Primary Tasks (wrap script/* per the OHF task conventions)
+# ─────────────────────────────────────────────────────────────────────────────
+
+[tasks.setup]
+description = "First-time project setup (deps)"
+run = "script/setup"
+
+[tasks.update]
+description = "Update the project after git pull"
+run = "script/update"
+
+[tasks.dev]
+description = "Build and run the standalone server locally"
+run = "script/server"
+
+[tasks.test]
+description = "Run the test suite"
+run = "script/test"
+
+[tasks.ci]
+description = "Run the full CI suite (lint, format, typecheck, test, build)"
+run = "script/cibuild"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Development Tasks
+# ─────────────────────────────────────────────────────────────────────────────
+
+[tasks.build]
+description = "Compile TypeScript to dist/"
+run = "pnpm build"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Code Quality Tasks
+# ─────────────────────────────────────────────────────────────────────────────
+
+[tasks.lint]
+description = "Run ESLint"
+run = "pnpm lint"
+
+[tasks."lint:fix"]
+description = "Run ESLint with auto-fix"
+run = "pnpm lint:fix"
+
+[tasks.format]
+description = "Format code with Prettier"
+run = "pnpm format"
+
+[tasks."format:check"]
+description = "Check formatting with Prettier"
+run = "pnpm format:check"
+
+[tasks.typecheck]
+description = "Type-check without emitting"
+run = "pnpm typecheck"
+
+[tasks.check]
+description = "Run lint, format and type checks"
+depends = ["lint", "format:check", "typecheck"]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Docker Tasks
+# ─────────────────────────────────────────────────────────────────────────────
+
+[tasks."docker:build"]
+description = "Build the Docker image"
+run = "docker build -t ma-signaling-server ."
+
+[tasks."docker:build:nocache"]
+description = "Build the Docker image without cache"
+run = "docker build --no-cache -t ma-signaling-server ."
+
+[tasks."docker:down"]
+description = "Stop and remove the container"
+run = "docker stop ma-signaling-server 2>/dev/null || true && docker container rm -f ma-signaling-server 2>/dev/null || true"
+
+[tasks."docker:up"]
+description = "Build and run the container"
+depends = ["docker:build", "docker:down"]
+run = "docker run --rm --name ma-signaling-server -p ${PORT}:${PORT} -e PORT=${PORT} ma-signaling-server"
+
+[tasks."docker:up:detached"]
+description = "Build and run the container in background"
+depends = ["docker:build", "docker:down"]
+run = "docker run -d --name ma-signaling-server -p ${PORT}:${PORT} -e PORT=${PORT} ma-signaling-server"
+
+[tasks."docker:logs"]
+description = "Follow container logs"
+run = "docker logs -f ma-signaling-server"
+
+[tasks."docker:test"]
+description = "Test that the Docker image builds and serves /health"
+depends = ["docker:build"]
+run = "script/docker-test ma-signaling-server"
+
+[tasks."docker:clean"]
+description = "Remove built Docker images"
+run = "docker rmi ma-signaling-server 2>/dev/null || true"
+
+[tasks.clean]
+description = "Remove build artifacts and dependencies"
+run = "rm -rf node_modules dist"

@@ -1,0 +1,83 @@
+{
+  $schema: 'https://docs.renovatebot.com/renovate-schema.json',
+  extends: [
+    'config:recommended',
+    ':dependencyDashboard',
+    // Renovate's own PRs use Conventional Commit messages.
+    ':semanticCommits',
+    // Keep GitHub Actions pinned to commit SHAs (with a human-readable version comment).
+    'helpers:pinGitHubActionDigests',
+    // Keep the node base image pinned by digest, and keep that digest moving.
+    'docker:pinDigests',
+  ],
+
+  // Conventional Commit scope for dependency PRs, e.g. "chore(deps): ...".
+  semanticCommitScope: 'deps',
+
+  // Per OHF quality standards: 7-day cooldown on new releases, so a
+  // compromised release has time to be spotted and unpublished before this
+  // repo is offered it.
+  minimumReleaseAge: '7 days',
+
+  // Be gentle with PR volume.
+  prConcurrentLimit: 5,
+  prHourlyLimit: 2,
+  // Surface vulnerability fixes even when an update is otherwise held back.
+  vulnerabilityAlerts: {
+    labels: ['security'],
+  },
+  lockFileMaintenance: {
+    enabled: false,
+  },
+
+  packageRules: [
+    {
+      description: 'Group GitHub Actions bumps into one PR.',
+      matchManagers: ['github-actions'],
+      groupName: 'github-actions',
+    },
+    {
+      description: 'Node moves in lockstep: mise pin, Dockerfile base image and @types/node.',
+      matchPackageNames: ['node', '@types/node'],
+      groupName: 'node',
+    },
+    {
+      description: 'pnpm itself (mise pin, packageManager field) and the action that installs it.',
+      matchPackageNames: ['pnpm', 'pnpm/action-setup'],
+      groupName: 'pnpm',
+    },
+    {
+      description: 'Lint/format tooling moves together and rarely needs individual scrutiny.',
+      matchPackageNames: [
+        'eslint',
+        '@eslint/**',
+        'eslint-plugin-*',
+        'eslint-config-*',
+        'typescript-eslint',
+        '@typescript-eslint/**',
+        'globals',
+        'prettier',
+        '@commitlint/**',
+        'husky',
+      ],
+      groupName: 'lint and format tooling',
+    },
+    {
+      description: 'Auto-merge low-risk digest/patch updates once CI passes.',
+      matchUpdateTypes: ['digest', 'pin', 'patch'],
+      automerge: true,
+    },
+  ],
+
+  // corepack is installed from npm in the Dockerfile (node 26 images no
+  // longer bundle it); teach Renovate to bump that pin.
+  customManagers: [
+    {
+      customType: 'regex',
+      managerFilePatterns: ['/^Dockerfile$/'],
+      matchStrings: ['npm install -g corepack@(?<currentValue>[0-9][0-9.]*)'],
+      depNameTemplate: 'corepack',
+      datasourceTemplate: 'npm',
+    },
+  ],
+}

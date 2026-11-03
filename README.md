@@ -1,64 +1,83 @@
 # Music Assistant Signaling Server
 
-WebRTC signaling server for Music Assistant remote connections. This server enables secure peer-to-peer connections between the hosted PWA and local Music Assistant instances without requiring port forwarding.
+WebRTC signaling server for Music Assistant remote connections. It lets the hosted PWA at app.music-assistant.io reach a local Music Assistant server without port forwarding: both sides connect to this server over WebSocket, exchange the WebRTC offer, answer and ICE candidates through it, and then stream peer to peer.
 
-## Quick Start
+The server keeps its registry in memory and runs as a single Node.js process in a container.
 
-### Option 1: Render.com (Recommended for Testing)
+## Running it
 
-[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy)
-
-1. Fork this repository
-2. Connect to Render.com
-3. Create a new Web Service pointing to your fork
-4. Set root directory to `/` and start command to `pnpm start`
-5. Your signaling server will be at `wss://your-app.onrender.com/ws`
-
-### Option 2: Local Development
-
-```bash
-pnpm install
-pnpm start
-# Server runs at ws://localhost:8787/ws
-```
-
-### Option 3: Using Mise
-
-```bash
-mise install        # Install Node.js 20
-mise run dev        # Run locally
-# Or with Docker:
-mise run docker:up  # Build and run with Docker
-# Server runs at ws://localhost:8787/ws
-```
-
-### Option 4: Docker
+### Docker
 
 ```bash
 docker run -p 8787:8787 ghcr.io/music-assistant/signaling-server:latest
-# Server runs at ws://localhost:8787/ws
+# WebSocket at ws://localhost:8787/ws, health at http://localhost:8787/health
 ```
 
-### Option 5: Cloudflare Workers (Production)
+Images are published to GitHub Container Registry on every release, for `linux/amd64` and `linux/arm64`, with signed build provenance:
 
 ```bash
-pnpm install
-pnpm dlx wrangler login
-pnpm deploy
+docker run -p 8787:8787 ghcr.io/music-assistant/signaling-server:2.0.1   # specific version
+docker run -p 9000:9000 -e PORT=9000 ghcr.io/music-assistant/signaling-server:latest
+gh attestation verify oci://ghcr.io/music-assistant/signaling-server:2.0.1 --owner music-assistant
+```
+
+### Docker Compose
+
+```yaml
+services:
+  signaling:
+    image: ghcr.io/music-assistant/signaling-server:latest
+    ports:
+      - '8787:8787'
+    environment:
+      - PORT=8787
+    restart: unless-stopped
+```
+
+The `docker-compose.yml` in this repository builds the image from source instead.
+
+### Local development
+
+Install [mise](https://mise.jdx.dev/); it provides the pinned Node.js and pnpm.
+
+```bash
+mise install
+mise run setup      # install dependencies
+mise run dev        # build and start on http://localhost:8787
+mise run test       # protocol tests against the built server
+mise run ci         # everything CI runs
+```
+
+Run `mise run` to see all tasks:
+
+```bash
+mise run setup              # First-time setup (installs dependencies)
+mise run update             # Update after git pull
+mise run dev                # Build and run the server
+mise run test               # Protocol tests: build, start, exercise the API
+mise run ci                 # Everything CI runs: lint, format, typecheck, test, build, audit
+mise run check              # Lint, format and type checks only
+mise run build              # Compile TypeScript to dist/
+mise run docker:build       # Build the Docker image
+mise run docker:build:nocache # Build without cache
+mise run docker:up          # Build and run container
+mise run docker:up:detached # Build and run in background
+mise run docker:down        # Stop and remove container
+mise run docker:logs        # Follow container logs
+mise run docker:test        # Build the image and check /health
+mise run docker:clean       # Remove built images
 ```
 
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                    Signaling Server (Cloudflare Workers)            │
+│                    Signaling Server (Node.js)                       │
 │                                                                     │
-│  ┌─────────────────────────────────────────────────────────────┐   │
-│  │                    Durable Object                            │   │
-│  │  - Maintains WebSocket connections                          │   │
-│  │  - Routes signaling messages                                │   │
-│  │  - Manages Remote ID registry                               │   │
-│  └─────────────────────────────────────────────────────────────┘   │
+│  - Maintains WebSocket connections                                  │
+│  - Routes signaling messages                                        │
+│  - Manages the Remote ID registry (in memory)                       │
+│  - Rate limits lookups and connections per IP                       │
 └─────────────────────────────────────────────────────────────────────┘
               ↑                                    ↑
               │ WebSocket                          │ WebSocket
@@ -73,41 +92,7 @@ pnpm deploy
                              WebRTC
 ```
 
-## Deployment
-
-### Docker (Recommended)
-
-```bash
-docker run -p 8787:8787 ghcr.io/music-assistant/signaling-server:latest
-```
-
-Or use mise tasks for local development:
-
-```bash
-mise run docker:up          # Build and run
-mise run docker:up:detached # Run in background
-```
-
-### Cloudflare Workers
-
-Prerequisites: Cloudflare account, Node.js 20+, Wrangler CLI
-
-```bash
-pnpm install
-pnpm dlx wrangler login
-pnpm deploy
-```
-
-### Local Development
-
-```bash
-pnpm install
-pnpm start
-# Or with mise:
-mise run dev
-```
-
-The server will be available at `http://localhost:8787`
+`src/signaling-core.ts` holds the protocol logic and is generic over the WebSocket type; `src/standalone.ts` is the HTTP and WebSocket entry point; `src/rate-limiter.ts` is the per-IP rate limiter. `test/protocol.test.ts` drives the whole protocol against a running build.
 
 ## API
 
@@ -118,14 +103,17 @@ Connect via WebSocket for signaling.
 #### Messages from MA Server
 
 **Register Server**
+
 ```json
 {
   "type": "register-server",
-  "remoteId": "MA-X7K9-P2M4"
+  "remoteId": "MA-X7K9-P2M4",
+  "iceServers": [{ "urls": "stun:stun.example.org" }]
 }
 ```
 
 Response:
+
 ```json
 {
   "type": "registered",
@@ -133,18 +121,32 @@ Response:
 }
 ```
 
+When a client asks for this server, the server receives `{"type": "client-connected", "sessionId": "abc123"}` and answers with fresh ICE servers:
+
+```json
+{
+  "type": "session-ready",
+  "sessionId": "abc123",
+  "iceServers": [{ "urls": "turn:turn.example.org", "username": "u", "credential": "c" }]
+}
+```
+
+If no `session-ready` arrives within 10 seconds, the client is connected with the ICE servers cached at registration.
+
 **Signaling Messages (to client)**
+
 ```json
 {
   "type": "answer|ice-candidate",
   "sessionId": "abc123",
-  "data": { /* SDP or ICE candidate */ }
+  "data": {/* SDP or ICE candidate */}
 }
 ```
 
 #### Messages from PWA Client
 
 **Connect Request**
+
 ```json
 {
   "type": "connect-request",
@@ -153,35 +155,50 @@ Response:
 ```
 
 Response:
+
 ```json
 {
   "type": "connected",
   "remoteId": "MA-X7K9-P2M4",
-  "sessionId": "abc123"
+  "sessionId": "abc123",
+  "iceServers": [{ "urls": "turn:turn.example.org", "username": "u", "credential": "c" }]
 }
 ```
 
 **Signaling Messages (to server)**
+
 ```json
 {
   "type": "offer|ice-candidate",
-  "data": { /* SDP or ICE candidate */ }
+  "data": {/* SDP or ICE candidate */}
 }
 ```
+
+#### Lifecycle messages
+
+- `{"type": "ping"}` is answered with `{"type": "pong"}`; the server also sends `{"type": "ping"}` every 30 seconds and terminates connections that stop answering protocol-level pings.
+- A server receives `{"type": "client-disconnected", "sessionId": "..."}` when a client leaves; a client receives `{"type": "peer-disconnected"}` when its server leaves.
+- Registering a Remote ID that is already registered replaces the old connection, which is closed with code `4000`.
+- Errors are reported as `{"type": "error", "error": "..."}`.
 
 ### REST Endpoints
 
 **Health Check**
+
 ```
 GET /health
 ```
 
+Returns the version, the commit the image was built from, and counters for connected servers, clients, pending clients and the rate limiter.
+
 **Check Remote ID Status**
+
 ```
 GET /api/check/:remoteId
 ```
 
 Response:
+
 ```json
 {
   "online": true
@@ -194,80 +211,13 @@ Response:
 
 2. **Remote ID Security**: Remote IDs should be sufficiently random to prevent guessing. The MA server generates these IDs.
 
-3. **Rate Limiting**: Built-in rate limiting protects against brute force attacks on the `/api/check` endpoint and WebSocket connections.
-
-## Docker
-
-### Pre-built Images
-
-Docker images are automatically published to GitHub Container Registry on each release:
-
-```bash
-# Latest version
-docker run -p 8787:8787 ghcr.io/music-assistant/signaling-server:latest
-
-# Specific version
-docker run -p 8787:8787 ghcr.io/music-assistant/signaling-server:2.0.0
-
-# Custom port
-docker run -p 9000:9000 -e PORT=9000 ghcr.io/music-assistant/signaling-server:latest
-```
-
-### Build Locally
-
-```bash
-docker build -t ma-signaling-server .
-docker run -p 8787:8787 ma-signaling-server
-```
-
-### Docker Compose
-
-```yaml
-services:
-  signaling:
-    image: ghcr.io/music-assistant/signaling-server:latest
-    ports:
-      - "8787:8787"
-    environment:
-      - PORT=8787
-    restart: unless-stopped
-```
-
-## Mise Tasks
-
-This project uses [mise](https://mise.jdx.dev/) for version management and task running.
-
-Run `mise run` to see all available tasks.
-
-```bash
-mise run docker:build       # Build the Docker image
-mise run docker:build:nocache # Build without cache
-mise run docker:up          # Build and run container
-mise run docker:up:detached # Build and run in background
-mise run docker:down        # Stop and remove container
-mise run docker:logs        # Follow container logs
-mise run docker:test        # Test build and run
-mise run docker:clean       # Remove built images
-mise run dev                # Run local dev server
-mise run build              # Build TypeScript
-```
+3. **Rate Limiting**: Built-in rate limiting protects against brute force attacks on the `/api/check` endpoint and WebSocket connections. Blocked clients get HTTP `429` or WebSocket close code `4029`.
 
 ## Environment Variables
 
 - `PORT`: Server port (default: `8787`)
-- `ENVIRONMENT`: Set to "production" or "development"
+- `GIT_COMMIT`: Reported by `/health`; set by the release build
 
-## Custom Domain
+## Releasing
 
-To use a custom domain (e.g., `signaling.music-assistant.io`):
-
-1. Add the domain to Cloudflare
-2. Update `wrangler.toml`:
-
-```toml
-routes = [
-  { pattern = "signaling.music-assistant.io/*", zone_name = "music-assistant.io" }
-]
-```
-
-3. Deploy with `pnpm deploy`
+Commits on `main` follow Conventional Commits. release-please opens a release PR that bumps the version and changelog; merging it publishes the GitHub release, which builds and pushes the container image.

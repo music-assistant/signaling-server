@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -e
+
+cd "$(dirname "$0")/.."
+
+script/bootstrap
+
+# Lint without --fix: CI must fail on what a developer would have to fix, not
+# rewrite it in a throwaway checkout and pass.
+pnpm lint
+pnpm format:check
+pnpm typecheck
+script/test
+pnpm build
+# Known advisories in production dependencies fail the build.
+pnpm audit --prod --audit-level high
