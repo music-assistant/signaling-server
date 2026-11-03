@@ -16,9 +16,9 @@ docker run -p 8787:8787 ghcr.io/music-assistant/signaling-server:latest
 Images are published to GitHub Container Registry on every release, for `linux/amd64` and `linux/arm64`, with signed build provenance:
 
 ```bash
-docker run -p 8787:8787 ghcr.io/music-assistant/signaling-server:v2.1.0  # specific version
+docker run -p 8787:8787 ghcr.io/music-assistant/signaling-server:v2.0.2  # specific version
 docker run -p 9000:9000 -e PORT=9000 ghcr.io/music-assistant/signaling-server:latest
-gh attestation verify oci://ghcr.io/music-assistant/signaling-server:v2.1.0 --owner music-assistant
+gh attestation verify oci://ghcr.io/music-assistant/signaling-server:v2.0.2 --owner music-assistant
 ```
 
 ### Docker Compose
