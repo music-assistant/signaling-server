@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Run a built image and check that /health answers. Usage: script/docker-test <image>
+set -e
+
+image="${1:?usage: script/docker-test <image>}"
+name="ma-signaling-test-$$"
+port="${TEST_PORT:-18787}"
+
+docker run --rm -d --name "$name" -p "${port}:8787" "$image" >/dev/null
+trap 'docker stop "$name" >/dev/null 2>&1 || true' EXIT
+
+for _ in $(seq 1 30); do
+  if curl -sf "http://127.0.0.1:${port}/health" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 1
+done
+
+body=$(curl -sf "http://127.0.0.1:${port}/health")
+echo "$body"
+echo "$body" | grep -q "\"status\":\"ok\"" || { echo "health status is not ok"; docker logs "$name"; exit 1; }
+echo "Docker smoke test passed"
