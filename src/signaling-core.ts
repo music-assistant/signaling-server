@@ -392,6 +392,11 @@ export class SignalingCore<WS> {
    * Handle WebSocket disconnection
    */
   handleDisconnect(ws: WS): void {
+    // Drop the IP mapping first. Every socket has one, but a socket that never
+    // registered, failed a lookup or was replaced has no metadata and returns
+    // below. Keeping the mapping would keep the closed socket in memory.
+    this.wsClientIp.delete(ws)
+
     const metadata = this.wsMetadata.get(ws)
     if (!metadata) {
       return
@@ -448,9 +453,6 @@ export class SignalingCore<WS> {
 
       this.wsMetadata.delete(ws)
     }
-
-    // Clean up IP mapping
-    this.wsClientIp.delete(ws)
   }
 
   /**
