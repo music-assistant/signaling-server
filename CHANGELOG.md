@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.0.4](https://github.com/music-assistant/signaling-server/compare/v2.0.3...v2.0.4) (2026-11-17)
+
+
+### Bug Fixes
+
+* free sockets that close without registering ([#10](https://github.com/music-assistant/signaling-server/issues/10)) ([efeca8b](https://github.com/music-assistant/signaling-server/commit/efeca8bfb0dba25d7004716762bbae697c474db9))
+
 ## [2.0.3](https://github.com/music-assistant/signaling-server/compare/v2.0.2...v2.0.3) (2026-11-03)
 
 
